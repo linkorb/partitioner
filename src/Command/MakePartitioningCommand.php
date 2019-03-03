@@ -14,8 +14,6 @@ class MakePartitioningCommand extends Command
 {
     protected static $defaultName = 'app:make-partitioning';
 
-    private $container;
-
     private $service;
 
     public function __construct($name = null, PartitioningService $service)
