@@ -180,8 +180,8 @@ class PartitioningService implements TablePartitionerInterface
     {
         $queryRange = "
             SELECT
-              MIN(`$stampColumn`) AS minDate,
-              MAX(`$stampColumn`) AS maxDate
+              DATE(MIN(`$stampColumn`)) AS minDate,
+              DATE(MAX(`$stampColumn`)) AS maxDate
             FROM $tableName
             WHERE
               `$stampColumn` < '$partitionCriteria'
@@ -228,7 +228,7 @@ class PartitioningService implements TablePartitionerInterface
                 break;
             case self::PARTITION_YEAR_MONTH_DAY:
                 $start = $dateStart;
-                $end = $dateEnd;
+                $end = $dateEnd->modify('next day');
                 $interval = \DateInterval::createFromDateString('1 day');
                 $period = new \DatePeriod($start, $interval, $end);
                 foreach ($period as $dt) {
