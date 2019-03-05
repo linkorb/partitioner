@@ -14,7 +14,26 @@ class MakePartitioningCommand extends Command
 {
     protected static $defaultName = 'app:make-partitioning';
 
+    /** @var PartitioningService */
     private $service;
+
+    /** @var string */
+    private $databaseUrl;
+
+    /** @var string */
+    private $tableName;
+
+    /** @var string */
+    private $partitionMode;
+
+    /** @var string */
+    private $stampColumn;
+
+    /** @var string */
+    private $minStamp;
+
+    /** @var SymfonyStyle */
+    private $io;
 
     public function __construct($name = null, PartitioningService $service)
     {
@@ -22,7 +41,7 @@ class MakePartitioningCommand extends Command
         parent::__construct($name);
     }
 
-    protected function configure()
+    protected function configure(): void
     {
         $this
             ->setDescription('Add a short description for your command')
@@ -33,50 +52,24 @@ class MakePartitioningCommand extends Command
             ->addArgument('minStamp', InputArgument::REQUIRED, 'Min Stamp');
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output)
+    protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $io = new SymfonyStyle($input, $output);
+        $this->io = new SymfonyStyle($input, $output);
 
-        $databaseUrl = $input->getArgument('databaseURL');
-        $tableName = $input->getArgument('tableName');
-        $partitionMode = $input->getArgument('partitionMode');
-        $stampColumn = $input->getArgument('stampColumn');
-        $minStamp = $input->getArgument('minStamp');
-
-        if ($tableName) {
-            $io->note(sprintf('Table Name: %s', $tableName));
-        }
-
-        if ($partitionMode) {
-            $io->note(sprintf('Partition Mode: %s', $partitionMode));
-        }
-
-        $partitionModes = [
-            PartitioningService::PARTITION_YEAR,
-            PartitioningService::PARTITION_YEAR_MONTH,
-            PartitioningService::PARTITION_YEAR_MONTH_DAY,
-        ];
-
-        if (!in_array($partitionMode, $partitionModes, true)) {
-            $io->error('Wrong Partition Mode: ' . $partitionMode);
+        try {
+            $this->validateArguments($input);
+        } catch (\Exception $e) {
+            $this->io->error('Wrong Partition Mode: ' . $this->partitionMode);
 
             return 1;
         }
 
-        if ($stampColumn) {
-            $io->note(sprintf('Stamp Column: %s', $stampColumn));
-        }
-
-        if ($partitionMode) {
-            $io->note(sprintf('Min Stamp: %s', $minStamp));
-        }
-
         $connector = new Connector();
         try {
-            $config = $connector->getConfig($databaseUrl);
+            $config = $connector->getConfig($this->databaseUrl);
             $pdo = $connector->getPdo($config);
         } catch (\Exception $e) {
-            $io->error($e->getMessage());
+            $this->io->error($e->getMessage());
 
             return 1;
         }
@@ -84,17 +77,54 @@ class MakePartitioningCommand extends Command
         try {
             $this->service->partition(
                 $pdo,
-                $tableName,
-                $partitionMode,
-                $stampColumn,
-                $minStamp
+                $this->tableName,
+                $this->partitionMode,
+                $this->stampColumn,
+                $this->minStamp
             );
         } catch (\Exception $e) {
-            $io->error($e->getMessage());
+            $this->io->error($e->getMessage());
 
             return 1;
         }
 
-        $io->success('The Partitioning have been made successfully.');
+        $this->io->success('The Partitioning have been made successfully.');
+
+        return 0;
+    }
+
+    /**
+     * @param InputInterface $input
+     * @throws \Exception
+     */
+    private function validateArguments(InputInterface $input): void
+    {
+        $this->databaseUrl = $input->getArgument('databaseURL');
+        $this->tableName = $input->getArgument('tableName');
+        $this->partitionMode = $input->getArgument('partitionMode');
+        $this->stampColumn = $input->getArgument('stampColumn');
+        $this->minStamp = $input->getArgument('minStamp');
+
+        if ($this->tableName) {
+            $this->io->note(sprintf('Table Name: %s', $this->tableName));
+        }
+
+        if ($this->partitionMode) {
+            $this->io->note(sprintf('Partition Mode: %s', $this->partitionMode));
+        }
+
+        $partitionModes = PartitioningService::getPartitionModes();
+
+        if (!in_array($this->partitionMode, $partitionModes, true)) {
+            throw new \Exception('Wrong Partition Mode: ' . $this->partitionMode);
+        }
+
+        if ($this->stampColumn) {
+            $this->io->note(sprintf('Stamp Column: %s', $this->stampColumn));
+        }
+
+        if ($this->partitionMode) {
+            $this->io->note(sprintf('Min Stamp: %s', $this->minStamp));
+        }
     }
 }

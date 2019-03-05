@@ -5,75 +5,76 @@ namespace App\Services;
 use App\Interfaces\TablePartitionerInterface;
 use Doctrine\DBAL\DriverManager;
 use Doctrine\DBAL\Schema\AbstractSchemaManager;
+use Doctrine\DBAL\Schema\Column;
+use Doctrine\DBAL\Schema\Index;
 use Doctrine\DBAL\Schema\Table;
 use Doctrine\ORM\Configuration;
 use PDO;
 
 class PartitioningService implements TablePartitionerInterface
 {
-    const BULK_SIZE = 100;
+    private const BULK_SIZE = 100;
 
-    public function partition(PDO $pdo, string $tableName, $partitionMode, string $stampColumn, $minStamp)
+    /** @var PDO */
+    private $pdo;
+
+    /** @var string */
+    private $tableName;
+
+    private $partitionMode;
+
+    /** @var string */
+    private $stampColumn;
+
+    /** @var AbstractSchemaManager */
+    private $schemaManager;
+
+    /** @var Column[] */
+    private $columns;
+
+    /** @var Index[] */
+    private $indexes;
+
+    public static function getPartitionModes(): array
     {
-        $schemaManager = $this->getSchemaManager($pdo);
+        return [
+            self::PARTITION_YEAR,
+            self::PARTITION_YEAR_MONTH,
+            self::PARTITION_YEAR_MONTH_DAY,
+        ];
+    }
 
-        [$columns, $indexes] = $this->getSchemaTable($tableName, $schemaManager);
+    public function partition(PDO $pdo, string $tableName, $partitionMode, string $stampColumn, $minStamp): void
+    {
+        $this->pdo = $pdo;
+        $this->tableName = $tableName;
+        $this->partitionMode = $partitionMode;
+        $this->stampColumn = $stampColumn;
 
-        $partitionCriteria = $this->getPartitionCriteria($partitionMode, $minStamp);
+        $this->schemaManager = $this->getSchemaManager();
 
-        $partitionTables = $this->getPartitionTables(
-            $stampColumn,
-            $partitionMode,
-            $partitionCriteria,
-            $tableName,
-            $pdo
-        );
+        [$this->columns, $this->indexes] = $this->getSchemaTable();
 
-        $fields = $this->getTableFields($columns);
+        $partitionCriteria = $this->getPartitionCriteria($minStamp);
 
-        foreach ($partitionTables as $partitionTableName => $dates) {
-            if (!$schemaManager->tablesExist([$partitionTableName])) {
-                echo 'There\'s no table with name: ' . $partitionTableName . PHP_EOL;
-                echo 'Trying to create new table...' . PHP_EOL;
-                $newTable = new Table('`' . $partitionTableName . '`', $columns, $indexes);
-                $schemaManager->createTable($newTable);
-                $firstPartitionedEntryAfter = $dates['start']->format('Y-m-d');
-                echo 'Last Paritioned Entry is for: ' . $firstPartitionedEntryAfter . PHP_EOL;
-            } else {
-                echo 'Partition table exists' . PHP_EOL;
-                $stmtPartitioned = $pdo->query("SELECT MAX(`$stampColumn`) AS last FROM `$partitionTableName`");
-                $lastRow = $stmtPartitioned->fetchAll();
-                $firstPartitionedEntryAfter = $lastRow[0]['last'] ?: $dates['start']->format('Y-m-d');
-                echo 'Last Paritioned Entry is for: ' . $firstPartitionedEntryAfter . PHP_EOL;
-            }
+        $partitionTables = $this->getPartitionTables($partitionCriteria);
 
-            $lastPartitionedEntryBefore = $dates['end']->format('Y-m-d');
+        $fields = $this->getTableFields();
 
-            $query = "
-              SELECT *
-              FROM $tableName
-              WHERE
-                    $stampColumn > '$firstPartitionedEntryAfter'
-              AND
-                    $stampColumn < '$lastPartitionedEntryBefore'
-            ";
+        foreach ($partitionTables as $partitionTable) {
+            $firstPartitionedEntryAfter = $this->preparePartitionTable($partitionTable);
+            $lastPartitionedEntryBefore = $partitionTable['end']->format('Y-m-d');
 
-            $queryCount = "
-              SELECT
-                     COUNT(*) AS rows
-              FROM $tableName
-              WHERE
-                    $stampColumn > '$firstPartitionedEntryAfter'
-              AND $stampColumn < '$lastPartitionedEntryBefore'
-            ";
-
-            $stmtCount = $pdo->query($queryCount);
-            $partitionRowsCount = (int)($stmtCount->fetchAll())[0]['rows'];
-
-            $stmt = $pdo->query($query);
+            $partitionRowsCount = $this->getPartitionRowsCount(
+                $firstPartitionedEntryAfter,
+                $lastPartitionedEntryBefore
+            );
 
             $valuesPlaceholdersStrings = $values = [];
-            $queryInsert = "INSERT IGNORE INTO `$partitionTableName`";
+            $queryInsert = "INSERT INTO `{$partitionTable['name']}`";
+
+            $queryForPartition = $this->getQueryForPartition($firstPartitionedEntryAfter, $lastPartitionedEntryBefore);
+            $stmt = $this->pdo->query($queryForPartition);
 
             $bulkCounter = 0;
             $totalCounter = 0;
@@ -93,19 +94,11 @@ class PartitioningService implements TablePartitionerInterface
                 $valuesPlaceholdersStrings[] = implode(', ', $valuesPlaceholders);
 
                 if (($bulkCounter === self::BULK_SIZE) || ($totalCounter === $partitionRowsCount)) {
-                    $queryAppend = ' (' . implode(', ', $fields) . ') VALUES (' . implode('), (', $valuesPlaceholdersStrings) . ')';
-                    try {
-                        $pdo->beginTransaction();
-                        $insertStmt = $pdo->prepare($queryInsert . $queryAppend);
-                        $insertStmt->execute($values);
+                    $bulkQuery = $queryInsert .
+                        ' (' . implode(', ', $fields) . ') VALUES (' . implode('), (', $valuesPlaceholdersStrings) . ')';
 
-                        // @todo Old Data Deletion Here
+                    $this->updateCurrentDataBulk($bulkQuery, $values);
 
-                        $pdo->commit();
-                    } catch (\Exception $e) {
-                        echo $e->getMessage() . PHP_EOL;
-                        $pdo->rollBack();
-                    }
                     $bulkCounter = 0;
                     $valuesPlaceholdersStrings = [];
                     $values = [];
@@ -114,13 +107,29 @@ class PartitioningService implements TablePartitionerInterface
         }
     }
 
-    private function getSchemaManager(PDO $pdo)
+    private function updateCurrentDataBulk($query, $values): void
+    {
+        try {
+            $this->pdo->beginTransaction();
+            $insertStmt = $this->pdo->prepare($query);
+            $insertStmt->execute($values);
+
+            // @todo Old Data Deletion Here
+
+            $this->pdo->commit();
+        } catch (\Exception $e) {
+            echo $e->getMessage() . PHP_EOL;
+            $this->pdo->rollBack();
+        }
+    }
+
+    private function getSchemaManager(): AbstractSchemaManager
     {
         $connConfig = new Configuration();
         $connection = DriverManager::getConnection(
             [
-                'driver' => 'pdo_' . $pdo->getAttribute(PDO::ATTR_DRIVER_NAME),
-                'pdo'    => $pdo,
+                'driver' => 'pdo_' . $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME),
+                'pdo'    => $this->pdo,
             ],
             $connConfig);
 
@@ -128,65 +137,60 @@ class PartitioningService implements TablePartitionerInterface
     }
 
     /**
-     * @param string                $tableName
-     * @param AbstractSchemaManager $schemaManager
      * @return array
      * @throws \Exception
      */
-    private function getSchemaTable(string $tableName, AbstractSchemaManager $schemaManager): array
+    private function getSchemaTable(): array
     {
         $table = null;
-        foreach ($schemaManager->listTables() as $item) {
-            if ($item->getName() === $tableName) {
+        foreach ($this->schemaManager->listTables() as $item) {
+            if ($item->getName() === $this->tableName) {
                 $table = $item;
                 break;
             }
         }
 
         if (null === $table) {
-            throw new \Exception('There\'s no table with name ' . $tableName . '.');
+            throw new \Exception('There\'s no table with name ' . $this->tableName . '.');
         }
 
-        $columns = $table->getColumns();
-        $indexes = $table->getIndexes();
-
-        return [$columns, $indexes];
+        return [
+            $table->getColumns(),
+            $table->getIndexes(),
+        ];
     }
 
-    private function getPartitionCriteria($partitionMode, $minStamp)
+    private function getPartitionCriteria($minStamp): string
     {
         $partitionCriteria = '1970-01-01';
         $stampDate = new \DateTime($minStamp);
 
-        switch ($partitionMode) {
+        switch ($this->partitionMode) {
             case self::PARTITION_YEAR:
-                $partitionString = $stampDate->format('Y');
-                $partitionCriteria = $partitionString . '-01-01';
+                $partitionCriteria = $stampDate->format('Y') . '-01-01';
                 break;
             case self::PARTITION_YEAR_MONTH:
-                $partitionString = $stampDate->format('Y-m');
-                $partitionCriteria = $partitionString . '-01';
+                $partitionCriteria = $stampDate->format('Y-m') . '-01';
                 break;
             case self::PARTITION_YEAR_MONTH_DAY:
-                $partitionString = $stampDate->format('Y-m-d');
-                $partitionCriteria = $partitionString;
+                $partitionCriteria = $stampDate->format('Y-m-d');
                 break;
         }
 
         return $partitionCriteria;
     }
 
-    private function getPartitionTables($stampColumn, $partitionMode, $partitionCriteria, $tableName, $pdo)
+    private function getPartitionTables($partitionCriteria): array
     {
         $queryRange = "
             SELECT
-              DATE(MIN(`$stampColumn`)) AS minDate,
-              DATE(MAX(`$stampColumn`)) AS maxDate
-            FROM $tableName
+              DATE(MIN(`$this->stampColumn`)) AS minDate,
+              DATE(MAX(`$this->stampColumn`)) AS maxDate
+            FROM $this->tableName
             WHERE
-              `$stampColumn` < '$partitionCriteria'
+              `$this->stampColumn` < '$partitionCriteria'
         ";
-        $stmtRange = $pdo->query($queryRange);
+        $stmtRange = $this->pdo->query($queryRange);
         $dataRangeRow = $stmtRange->fetchAll();
         $dateFirst = $dataRangeRow[0]['minDate'];
         $dateLast = $dataRangeRow[0]['maxDate'];
@@ -199,7 +203,7 @@ class PartitioningService implements TablePartitionerInterface
         $dateEnd = new \DateTime($dateLast);
         $partitionTables = [];
 
-        switch ($partitionMode) {
+        switch ($this->partitionMode) {
             case self::PARTITION_YEAR:
                 $start = $dateStart->modify('first day of this year');
                 $end = $dateEnd->modify('last day of this year');
@@ -207,7 +211,8 @@ class PartitioningService implements TablePartitionerInterface
                 $period = new \DatePeriod($start, $interval, $end);
                 foreach ($period as $dt) {
                     $suffix = $dt->format('Y');
-                    $partitionTables['_' . $tableName . '__' . $suffix] = [
+                    $partitionTables[] = [
+                        'name'  => '_' . $this->tableName . '__' . $suffix,
                         'start' => new \DateTime($suffix . '-01-01'),
                         'end'   => (new \DateTime($suffix . '-01-01'))->modify('first day of next year'),
                     ];
@@ -220,7 +225,8 @@ class PartitioningService implements TablePartitionerInterface
                 $period = new \DatePeriod($start, $interval, $end);
                 foreach ($period as $dt) {
                     $suffix = $dt->format('Y-m');
-                    $partitionTables['_' . $tableName . '__' . $suffix] = [
+                    $partitionTables[] = [
+                        'name'  => '_' . $this->tableName . '__' . $suffix,
                         'start' => new \DateTime($suffix . '-01'),
                         'end'   => (new \DateTime($suffix . '-01'))->modify('first day of next month'),
                     ];
@@ -233,7 +239,8 @@ class PartitioningService implements TablePartitionerInterface
                 $period = new \DatePeriod($start, $interval, $end);
                 foreach ($period as $dt) {
                     $suffix = $dt->format('Y-m-d');
-                    $partitionTables['_' . $tableName . '__' . $suffix] = [
+                    $partitionTables[] = [
+                        'name'  => '_' . $this->tableName . '__' . $suffix,
                         'start' => new \DateTime($suffix),
                         'end'   => new \DateTime($suffix . '+ 1 day'),
                     ];
@@ -245,16 +252,67 @@ class PartitioningService implements TablePartitionerInterface
     }
 
     /**
-     * @param $columns
      * @return array
      */
-    private function getTableFields($columns): array
+    private function getTableFields(): array
     {
         $fields = [];
-        foreach ($columns as $item) {
+        foreach ($this->columns as $item) {
             $fields[] = $item->getName();
         }
 
         return $fields;
+    }
+
+    private function getPartitionRowsCount($firstPartitionedEntryAfter, $lastPartitionedEntryBefore): int
+    {
+        $queryCount = "
+                SELECT
+                    COUNT(*) AS rows
+                FROM
+                    $this->tableName
+                WHERE
+                    $this->stampColumn > '$firstPartitionedEntryAfter'
+                AND
+                    $this->stampColumn < '$lastPartitionedEntryBefore'
+            ";
+
+        $stmtCount = $this->pdo->query($queryCount);
+
+        return (int)($stmtCount->fetchAll())[0]['rows'];
+    }
+
+    private function preparePartitionTable($partitionTable)
+    {
+        if (!$this->schemaManager->tablesExist([$partitionTable['name']])) {
+            echo 'There\'s no table with name: ' . $partitionTable['name'] . PHP_EOL;
+            echo 'Trying to create new table...' . PHP_EOL;
+            $newTable = new Table('`' . $partitionTable['name'] . '`', $this->columns, $this->indexes);
+            $this->schemaManager->createTable($newTable);
+            $firstPartitionedEntryAfter = $partitionTable['start']->format('Y-m-d');
+        } else {
+            echo 'Partition table exists' . PHP_EOL;
+            $stmtPartitioned = $this->pdo->query("SELECT MAX(`$this->stampColumn`) AS last FROM `{$partitionTable['name']}`");
+            $lastRow = $stmtPartitioned->fetchAll();
+            $firstPartitionedEntryAfter = $lastRow[0]['last'] ?: $partitionTable['start']->format('Y-m-d');
+        }
+
+        echo 'Last Paritioned Entry is for: ' . $firstPartitionedEntryAfter . PHP_EOL;
+
+        return $firstPartitionedEntryAfter;
+    }
+
+    private function getQueryForPartition($firstPartitionedEntryAfter, $lastPartitionedEntryBefore): string
+    {
+        return "
+                SELECT
+                    *
+                FROM
+                    $this->tableName
+                WHERE
+                    $this->stampColumn > '$firstPartitionedEntryAfter'
+                AND
+                    $this->stampColumn < '$lastPartitionedEntryBefore'
+            ";
     }
 }
