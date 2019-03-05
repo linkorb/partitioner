@@ -1,4 +1,4 @@
-#Description
+# Description
 
 In several applications we have some tables that are getting very large (usually event logs, audit trails, etc).
 
@@ -36,12 +36,12 @@ To support this library, we'll also need a console command that can execute this
 * Ensure the function can be executed multiple times, continuing the process where it left last time
 * Use database transactions around the copying + deleting (moving) of records, so that a failed transaction can simply be restarted.
 
-#Usage
+# Usage
 
-###Console Command:
+### Console Command:
 
 `bin/console app:make-partitioning mysql://<user>:<pass>@<host>:<port>/<database> <table_name> <partition_mode> <column> <min_stamp>`
 
-###Example:
+### Example:
 
 `bin/console app:make-partitioning mysql://user:pass@mysql:3306/partition log_visit YEAR_MONTH_DAY visit_first_action_time 2018-10-01`
