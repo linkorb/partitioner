@@ -82,7 +82,7 @@ class PartitioningService implements TablePartitionerInterface
             $values = [];
             $primaryKeysToDelete = [];
 
-            $queryInsert = "INSERT INTO `{$partitionTable['name']}`";
+            $queryInsert = "INSERT IGNORE INTO `{$partitionTable['name']}`";
 
             $queryForPartition = $this->getQueryForPartition($firstPartitionedEntryAfter, $lastPartitionedEntryBefore);
             $stmt = $this->pdo->query($queryForPartition);
@@ -147,7 +147,7 @@ class PartitioningService implements TablePartitionerInterface
         $primaryKeys = '`' . implode('`, `', $this->primaryKeys) . '`';
         $values = [];
         foreach ($primaryKeysToDelete as $keys) {
-                $values[] = "('" . implode("', '", array_values($keys)) . "')";
+            $values[] = "('" . implode("', '", array_values($keys)) . "')";
         }
 
         $query = "DELETE FROM $this->tableName WHERE (" . $primaryKeys . ') IN (' . implode(', ', $values) . ')';
@@ -306,7 +306,7 @@ class PartitioningService implements TablePartitionerInterface
                 FROM
                     $this->tableName
                 WHERE
-                    $this->stampColumn > '$firstPartitionedEntryAfter'
+                    $this->stampColumn >= '$firstPartitionedEntryAfter'
                 AND
                     $this->stampColumn < '$lastPartitionedEntryBefore'
             ";
@@ -344,7 +344,7 @@ class PartitioningService implements TablePartitionerInterface
                 FROM
                     $this->tableName
                 WHERE
-                    $this->stampColumn > '$firstPartitionedEntryAfter'
+                    $this->stampColumn >= '$firstPartitionedEntryAfter'
                 AND
                     $this->stampColumn < '$lastPartitionedEntryBefore'
             ";

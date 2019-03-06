@@ -36,12 +36,28 @@ To support this library, we'll also need a console command that can execute this
 * Ensure the function can be executed multiple times, continuing the process where it left last time
 * Use database transactions around the copying + deleting (moving) of records, so that a failed transaction can simply be restarted.
 
+# Installation
+
+### Standalone Console Command
+
+```bash
+git clone https://github.com/pythagor/partitioner
+composer install
+```
+### Library into an existing project
+
+TBD
+
 # Usage
 
 ### Console Command:
 
-`bin/console app:make-partitioning mysql://<user>:<pass>@<host>:<port>/<database> <table_name> <partition_mode> <column> <min_stamp>`
+```bash
+bin/console app:make-partitioning mysql://<user>:<pass>@<host>:<port>/<database> <table_name> <partition_mode> <column> <min_stamp>
+```
 
 ### Example:
 
-`bin/console app:make-partitioning mysql://user:pass@localhost:3306/partition log_visit YEAR_MONTH_DAY visit_first_action_time 2018-10-01`
+```bash
+bin/console app:make-partitioning mysql://user:pass@localhost:3306/partition log_visit YEAR_MONTH_DAY visit_first_action_time 2018-10-01
+```
