@@ -26,6 +26,8 @@ class PartitioningService implements TablePartitionerInterface
     /** @var string */
     private $stampColumn;
 
+    private $minStamp;
+
     /** @var AbstractSchemaManager */
     private $schemaManager;
 
@@ -34,6 +36,9 @@ class PartitioningService implements TablePartitionerInterface
 
     /** @var Index[] */
     private $indexes;
+
+    /** @var string[] */
+    private $primaryKeys;
 
     public static function getPartitionModes(): array
     {
@@ -50,12 +55,15 @@ class PartitioningService implements TablePartitionerInterface
         $this->tableName = $tableName;
         $this->partitionMode = $partitionMode;
         $this->stampColumn = $stampColumn;
+        $this->minStamp = $minStamp;
+
+        $this->validateArguments();
 
         $this->schemaManager = $this->getSchemaManager();
 
         [$this->columns, $this->indexes] = $this->getSchemaTable();
 
-        $partitionCriteria = $this->getPartitionCriteria($minStamp);
+        $partitionCriteria = $this->getPartitionCriteria();
 
         $partitionTables = $this->getPartitionTables($partitionCriteria);
 
@@ -154,16 +162,18 @@ class PartitioningService implements TablePartitionerInterface
             throw new \Exception('There\'s no table with name ' . $this->tableName . '.');
         }
 
+        $this->primaryKeys = $table->getPrimaryKeyColumns();
+
         return [
             $table->getColumns(),
             $table->getIndexes(),
         ];
     }
 
-    private function getPartitionCriteria($minStamp): string
+    private function getPartitionCriteria(): string
     {
         $partitionCriteria = '1970-01-01';
-        $stampDate = new \DateTime($minStamp);
+        $stampDate = new \DateTime($this->minStamp);
 
         switch ($this->partitionMode) {
             case self::PARTITION_YEAR:
@@ -314,5 +324,34 @@ class PartitioningService implements TablePartitionerInterface
                 AND
                     $this->stampColumn < '$lastPartitionedEntryBefore'
             ";
+    }
+
+    /**
+     * @throws \Exception
+     */
+    private function validateArguments(): void
+    {
+        if ($this->tableName) {
+            echo sprintf('Table Name: %s', $this->tableName) . PHP_EOL;
+        }
+
+        if ($this->partitionMode) {
+            echo sprintf('Partition Mode: %s', $this->partitionMode) . PHP_EOL;
+        }
+
+        $partitionModes = self::getPartitionModes();
+
+        if (!in_array($this->partitionMode, $partitionModes, true)) {
+            throw new \Exception('Wrong Partition Mode: ' . $this->partitionMode);
+        }
+
+        if ($this->stampColumn) {
+            echo sprintf('Stamp Column: %s', $this->stampColumn) . PHP_EOL;
+        }
+
+        if ($this->minStamp) {
+            // @todo make validation
+            echo sprintf('Min Stamp: %s', $this->minStamp) . PHP_EOL;
+        }
     }
 }
