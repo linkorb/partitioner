@@ -78,7 +78,10 @@ class PartitioningService implements TablePartitionerInterface
                 $lastPartitionedEntryBefore
             );
 
-            $valuesPlaceholdersStrings = $values = [];
+            $valuesPlaceholdersStrings = [];
+            $values = [];
+            $primaryKeysToDelete = [];
+
             $queryInsert = "INSERT INTO `{$partitionTable['name']}`";
 
             $queryForPartition = $this->getQueryForPartition($firstPartitionedEntryAfter, $lastPartitionedEntryBefore);
@@ -89,6 +92,7 @@ class PartitioningService implements TablePartitionerInterface
 
             while ($data = $stmt->fetch()) {
                 $valuesPlaceholders = [];
+                $rowPrimaryKeys = [];
                 $bulkCounter++;
                 $totalCounter++;
                 foreach ($data as $key => $value) {
@@ -97,7 +101,13 @@ class PartitioningService implements TablePartitionerInterface
                     }
                     $valuesPlaceholders[] = '?';
                     $values[] = $value;
+
+                    if (in_array($key, $this->primaryKeys, true)) {
+                        $rowPrimaryKeys[$key] = $value;
+                    }
                 }
+
+                $primaryKeysToDelete[] = $rowPrimaryKeys;
 
                 $valuesPlaceholdersStrings[] = implode(', ', $valuesPlaceholders);
 
@@ -105,30 +115,44 @@ class PartitioningService implements TablePartitionerInterface
                     $bulkQuery = $queryInsert .
                         ' (' . implode(', ', $fields) . ') VALUES (' . implode('), (', $valuesPlaceholdersStrings) . ')';
 
-                    $this->updateCurrentDataBulk($bulkQuery, $values);
+                    $this->updateCurrentDataBulk($bulkQuery, $values, $primaryKeysToDelete);
 
                     $bulkCounter = 0;
                     $valuesPlaceholdersStrings = [];
                     $values = [];
+                    $primaryKeysToDelete = [];
                 }
             }
         }
     }
 
-    private function updateCurrentDataBulk($query, $values): void
+    private function updateCurrentDataBulk(string $query, array $values, array $primaryKeysToDelete): void
     {
         try {
             $this->pdo->beginTransaction();
             $insertStmt = $this->pdo->prepare($query);
             $insertStmt->execute($values);
 
-            // @todo Old Data Deletion Here
+            $this->deleteByPrimaryKeys($primaryKeysToDelete);
 
             $this->pdo->commit();
         } catch (\Exception $e) {
             echo $e->getMessage() . PHP_EOL;
             $this->pdo->rollBack();
         }
+    }
+
+    private function deleteByPrimaryKeys(array $primaryKeysToDelete): void
+    {
+        $primaryKeys = '`' . implode('`, `', $this->primaryKeys) . '`';
+        $values = [];
+        foreach ($primaryKeysToDelete as $keys) {
+                $values[] = "('" . implode("', '", array_values($keys)) . "')";
+        }
+
+        $query = "DELETE FROM $this->tableName WHERE (" . $primaryKeys . ') IN (' . implode(', ', $values) . ')';
+        $deleteStatement = $this->pdo->query($query);
+        $deleteStatement->execute();
     }
 
     private function getSchemaManager(): AbstractSchemaManager
