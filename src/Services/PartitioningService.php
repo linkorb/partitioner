@@ -8,12 +8,18 @@ use Doctrine\DBAL\Schema\AbstractSchemaManager;
 use Doctrine\DBAL\Schema\Column;
 use Doctrine\DBAL\Schema\Index;
 use Doctrine\DBAL\Schema\Table;
+use Doctrine\DBAL\Types\DateTimeType;
+use Doctrine\DBAL\Types\DateType;
+use Doctrine\DBAL\Types\IntegerType;
 use Doctrine\ORM\Configuration;
 use PDO;
 
 class PartitioningService implements TablePartitionerInterface
 {
     private const BULK_SIZE = 100;
+
+    private const STAMP_COLUMNT_TYPE_INTEGER  = 'int';
+    private const STAMP_COLUMNT_TYPE_DATETIME = 'datetime';
 
     /** @var PDO */
     private $pdo;
@@ -26,6 +32,7 @@ class PartitioningService implements TablePartitionerInterface
     /** @var string */
     private $stampColumn;
 
+    /** @var \DateTime|string */
     private $minStamp;
 
     /** @var AbstractSchemaManager */
@@ -39,6 +46,9 @@ class PartitioningService implements TablePartitionerInterface
 
     /** @var string[] */
     private $primaryKeys;
+
+    /** @var string */
+    private $stampColumnType;
 
     public static function getPartitionModes(): array
     {
@@ -57,13 +67,15 @@ class PartitioningService implements TablePartitionerInterface
         $this->stampColumn = $stampColumn;
         $this->minStamp = $minStamp;
 
-        $this->validateArguments();
-
         $this->schemaManager = $this->getSchemaManager();
 
         [$this->columns, $this->indexes] = $this->getSchemaTable();
 
-        $partitionCriteria = $this->getPartitionCriteria();
+        $this->validateArguments();
+
+        $partitionCriteria = (self::STAMP_COLUMNT_TYPE_DATETIME === $this->stampColumnType) ?
+            $this->getPartitionCriteriaDateTime() :
+            $this->getPartitionCriteriaTimestamp();
 
         $partitionTables = $this->getPartitionTables($partitionCriteria);
 
@@ -71,7 +83,9 @@ class PartitioningService implements TablePartitionerInterface
 
         foreach ($partitionTables as $partitionTable) {
             $firstPartitionedEntryAfter = $this->preparePartitionTable($partitionTable);
-            $lastPartitionedEntryBefore = $partitionTable['end']->format('Y-m-d');
+            $lastPartitionedEntryBefore = (self::STAMP_COLUMNT_TYPE_DATETIME === $this->stampColumnType) ?
+                $partitionTable['end']->format('Y-m-d') :
+                $partitionTable['end']->getTimestamp();
 
             $partitionRowsCount = $this->getPartitionRowsCount(
                 $firstPartitionedEntryAfter,
@@ -188,42 +202,64 @@ class PartitioningService implements TablePartitionerInterface
 
         $this->primaryKeys = $table->getPrimaryKeyColumns();
 
+        $column = $table->getColumn($this->stampColumn);
+
+        if ($column->getType() instanceof IntegerType) {
+            $this->stampColumnType = self::STAMP_COLUMNT_TYPE_INTEGER;
+        } else if (
+            $column->getType() instanceof DateTimeType ||
+            $column->getType() instanceof DateType
+        ) {
+            $this->stampColumnType = self::STAMP_COLUMNT_TYPE_DATETIME;
+        } else {
+            throw new \Exception('Unknown Stamp Column Type');
+        }
+
         return [
             $table->getColumns(),
             $table->getIndexes(),
         ];
     }
 
-    private function getPartitionCriteria(): string
+    private function getPartitionCriteriaDateTime(): string
     {
         $partitionCriteria = '1970-01-01';
-        $stampDate = new \DateTime($this->minStamp);
 
         switch ($this->partitionMode) {
             case self::PARTITION_YEAR:
-                $partitionCriteria = $stampDate->format('Y') . '-01-01';
+                $partitionCriteria = $this->minStamp->format('Y') . '-01-01';
                 break;
             case self::PARTITION_YEAR_MONTH:
-                $partitionCriteria = $stampDate->format('Y-m') . '-01';
+                $partitionCriteria = $this->minStamp->format('Y-m') . '-01';
                 break;
             case self::PARTITION_YEAR_MONTH_DAY:
-                $partitionCriteria = $stampDate->format('Y-m-d');
+                $partitionCriteria = $this->minStamp->format('Y-m-d');
                 break;
         }
 
         return $partitionCriteria;
     }
 
-    private function getPartitionTables($partitionCriteria): array
+    private function getPartitionCriteriaTimestamp(): string
+    {
+        $partitionCriteria = $this->getPartitionCriteriaDateTime();
+
+        $startPeriodDateTime = new \DateTime($partitionCriteria);
+
+        return (string)$startPeriodDateTime->getTimestamp();
+    }
+
+    private function getPartitionTables(string $partitionCriteria): array
     {
         $queryRange = "
             SELECT
-              DATE(MIN(`$this->stampColumn`)) AS minDate,
-              DATE(MAX(`$this->stampColumn`)) AS maxDate
+              MIN(`$this->stampColumn`) AS minDate,
+              MAX(`$this->stampColumn`) AS maxDate
             FROM $this->tableName
             WHERE
               `$this->stampColumn` < '$partitionCriteria'
         ";
+
         $stmtRange = $this->pdo->query($queryRange);
         $dataRangeRow = $stmtRange->fetchAll();
         $dateFirst = $dataRangeRow[0]['minDate'];
@@ -233,14 +269,18 @@ class PartitioningService implements TablePartitionerInterface
             throw  new \Exception('Something went wrong with dates');
         }
 
-        $dateStart = new \DateTime($dateFirst);
-        $dateEnd = new \DateTime($dateLast);
+        $dateStart = (self::STAMP_COLUMNT_TYPE_DATETIME === $this->stampColumnType) ?
+            new \DateTime($dateFirst) :
+            \DateTime::createFromFormat('U', $dateFirst);
+        $dateEnd = (self::STAMP_COLUMNT_TYPE_DATETIME === $this->stampColumnType) ?
+            new \DateTime($dateLast) :
+            \DateTime::createFromFormat('U', $dateLast);
         $partitionTables = [];
 
         switch ($this->partitionMode) {
             case self::PARTITION_YEAR:
                 $start = $dateStart->modify('first day of this year');
-                $end = $dateEnd->modify('last day of this year');
+                $end = $dateEnd->modify('last day of this year')->setTime(0, 0);
                 $interval = \DateInterval::createFromDateString('1 year');
                 $period = new \DatePeriod($start, $interval, $end);
                 foreach ($period as $dt) {
@@ -254,7 +294,7 @@ class PartitioningService implements TablePartitionerInterface
                 break;
             case self::PARTITION_YEAR_MONTH:
                 $start = $dateStart->modify('first day of this month');
-                $end = $dateEnd->modify('last day of this month');
+                $end = $dateEnd->modify('last day of this month')->setTime(0, 0);
                 $interval = \DateInterval::createFromDateString('1 month');
                 $period = new \DatePeriod($start, $interval, $end);
                 foreach ($period as $dt) {
@@ -268,7 +308,7 @@ class PartitioningService implements TablePartitionerInterface
                 break;
             case self::PARTITION_YEAR_MONTH_DAY:
                 $start = $dateStart;
-                $end = $dateEnd->modify('next day');
+                $end = $dateEnd->modify('next day')->setTime(0, 0);
                 $interval = \DateInterval::createFromDateString('1 day');
                 $period = new \DatePeriod($start, $interval, $end);
                 foreach ($period as $dt) {
@@ -323,12 +363,18 @@ class PartitioningService implements TablePartitionerInterface
             echo 'Trying to create new table...' . PHP_EOL;
             $newTable = new Table('`' . $partitionTable['name'] . '`', $this->columns, $this->indexes);
             $this->schemaManager->createTable($newTable);
-            $firstPartitionedEntryAfter = $partitionTable['start']->format('Y-m-d');
+            $firstPartitionedEntryAfter =
+                (self::STAMP_COLUMNT_TYPE_DATETIME === $this->stampColumnType) ?
+                    $partitionTable['start']->format('Y-m-d') :
+                    $partitionTable['start']->getTimestamp();
         } else {
             echo 'Partition table exists' . PHP_EOL;
             $stmtPartitioned = $this->pdo->query("SELECT MAX(`$this->stampColumn`) AS last FROM `{$partitionTable['name']}`");
             $lastRow = $stmtPartitioned->fetchAll();
-            $firstPartitionedEntryAfter = $lastRow[0]['last'] ?: $partitionTable['start']->format('Y-m-d');
+
+            $firstPartitionedEntryAfter = (self::STAMP_COLUMNT_TYPE_DATETIME === $this->stampColumnType) ?
+                $lastRow[0]['last'] ?: $partitionTable['start']->format('Y-m-d H:i:s') :
+                $lastRow[0]['last'] ?: $partitionTable['start']->getTimestamp();
         }
 
         echo 'Last Paritioned Entry is for: ' . $firstPartitionedEntryAfter . PHP_EOL;
@@ -374,8 +420,13 @@ class PartitioningService implements TablePartitionerInterface
         }
 
         if ($this->minStamp) {
-            // @todo make validation
-            echo sprintf('Min Stamp: %s', $this->minStamp) . PHP_EOL;
+            try {
+                $this->minStamp = new \DateTime($this->minStamp);
+            } catch (\Exception $e) {
+                throw new \Exception('Wrong minStamp format');
+            }
+
+            echo sprintf('Min Stamp: %s', $this->minStamp->format('Y-m-d')) . PHP_EOL;
         }
     }
 }

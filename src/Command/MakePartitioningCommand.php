@@ -22,6 +22,9 @@ class MakePartitioningCommand extends Command
 
     public function __construct($name = null, PartitioningService $service)
     {
+        date_default_timezone_set('UTC');
+        ini_set('date.timezone', 'UTC');
+
         $this->service = $service;
         parent::__construct($name);
     }

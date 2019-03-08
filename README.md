@@ -56,6 +56,9 @@ TBD
 bin/console app:make-partitioning mysql://<user>:<pass>@<host>:<port>/<database> <table_name> <partition_mode> <column> <min_stamp>
 ```
 
+* `<column>` - name of the column to partition by (either a `INT` or `DATE`/`DATETIME` database column type)
+* `<min_stamp>` - `Y-m-d` value to paritioning rows older than given value.
+
 ### Example:
 
 ```bash
