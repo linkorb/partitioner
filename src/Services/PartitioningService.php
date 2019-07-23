@@ -254,6 +254,8 @@ class PartitioningService implements TablePartitionerInterface
             FROM $this->tableName
             WHERE
               `$this->stampColumn` < :partitionCriteria
+            AND
+              !isnull(`$this->stampColumn`)
         ";
         $stmtRange = $this->pdo->prepare($queryRange);
         $stmtRange->execute(
