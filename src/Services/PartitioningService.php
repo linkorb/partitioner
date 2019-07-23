@@ -266,7 +266,7 @@ class PartitioningService implements TablePartitionerInterface
         $dateLast = $dataRangeRow[0]['maxDate'];
 
         if (empty($dateFirst) || empty($dateLast)) {
-            echo "No rows in source table that match the partition criteria: " . $partitionCriteria;
+            echo "No rows in source table that match the partition criteria: `" . $this->stampColumn . ' < ' . $partitionCriteria . '`';
             return [];
         }
 
