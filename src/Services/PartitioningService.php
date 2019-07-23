@@ -251,10 +251,14 @@ class PartitioningService implements TablePartitionerInterface
               MAX(`$this->stampColumn`) AS maxDate
             FROM $this->tableName
             WHERE
-              `$this->stampColumn` < '$partitionCriteria'
+              `$this->stampColumn` < :partitionCriteria
         ";
-
-        $stmtRange = $this->pdo->query($queryRange);
+        $stmtRange = $this->pdo->prepare($queryRange);
+        $stmtRange->execute(
+            [
+                ':partitionCriteria' => $partitionCriteria
+            ]
+        );
         $dataRangeRow = $stmtRange->fetchAll();
         $dateFirst = $dataRangeRow[0]['minDate'];
         $dateLast = $dataRangeRow[0]['maxDate'];
