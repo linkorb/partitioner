@@ -264,7 +264,8 @@ class PartitioningService implements TablePartitionerInterface
         $dateLast = $dataRangeRow[0]['maxDate'];
 
         if (empty($dateFirst) || empty($dateLast)) {
-            throw  new \Exception('Something went wrong with dates');
+            echo "No rows in source table that match the partition criteria: " . $partitionCriteria;
+            return [];
         }
 
         $dateStart = (self::STAMP_COLUMNT_TYPE_DATETIME === $this->stampColumnType) ?
