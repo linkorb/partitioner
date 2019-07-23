@@ -188,13 +188,7 @@ class PartitioningService implements TablePartitionerInterface
      */
     private function getSchemaTable(): array
     {
-        $table = null;
-        foreach ($this->schemaManager->listTables() as $item) {
-            if ($item->getName() === $this->tableName) {
-                $table = $item;
-                break;
-            }
-        }
+        $table = $this->schemaManager->listTableDetails($this->tableName);
 
         if (null === $table) {
             throw new \Exception('There\'s no table with name ' . $this->tableName . '.');
