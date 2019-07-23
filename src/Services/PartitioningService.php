@@ -128,7 +128,7 @@ class PartitioningService implements TablePartitionerInterface
                 if (($bulkCounter === self::BULK_SIZE) || ($totalCounter === $partitionRowsCount)) {
                     echo ".";
                     $bulkQuery = $queryInsert .
-                        ' (' . implode(', ', $fields) . ') VALUES (' . implode('), (', $valuesPlaceholdersStrings) . ')';
+                        ' (`' . implode('`, `', $fields) . '`) VALUES (' . implode('), (', $valuesPlaceholdersStrings) . ')';
 
                     $this->updateCurrentDataBulk($bulkQuery, $values, $primaryKeysToDelete);
 
