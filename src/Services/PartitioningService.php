@@ -126,6 +126,7 @@ class PartitioningService implements TablePartitionerInterface
                 $valuesPlaceholdersStrings[] = implode(', ', $valuesPlaceholders);
 
                 if (($bulkCounter === self::BULK_SIZE) || ($totalCounter === $partitionRowsCount)) {
+                    echo ".";
                     $bulkQuery = $queryInsert .
                         ' (' . implode(', ', $fields) . ') VALUES (' . implode('), (', $valuesPlaceholdersStrings) . ')';
 
@@ -137,6 +138,7 @@ class PartitioningService implements TablePartitionerInterface
                     $primaryKeysToDelete = [];
                 }
             }
+            echo " DONE\n";
         }
     }
 
